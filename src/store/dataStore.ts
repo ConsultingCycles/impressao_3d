@@ -15,7 +15,6 @@ interface DataState {
   
   fetchData: () => Promise<void>;
   
-  // Cadastros
   addPrinter: (data: Omit<Printer, 'id' | 'user_id' | 'total_hours_printed'>) => Promise<void>;
   updatePrinter: (id: string, data: Partial<Printer>) => Promise<void>;
   deletePrinter: (id: string) => Promise<void>;
@@ -39,7 +38,6 @@ interface DataState {
 
   updateConfig: (config: Partial<UserConfig>) => Promise<void>;
 
-  // Ações Complexas
   registerProduction: (printData: Omit<Print, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
   deletePrint: (id: string) => Promise<void>;
   
@@ -48,7 +46,6 @@ interface DataState {
   deleteOrder: (id: string) => Promise<void>;
   finalizeOrder: (orderId: string) => Promise<void>;
 
-  // Importação
   importOrdersBatch: (orders: any[], marketplaceId: string) => Promise<void>;
 }
 
@@ -94,14 +91,21 @@ export const useDataStore = create<DataState>((set, get) => ({
     }
   },
 
-  // --- CRUD GERAL ---
+  // ... CRUDs ...
   addPrinter: async (data) => { const user = useAuthStore.getState().user; if (!user) return; await supabase.from('printers').insert([{ ...data, user_id: user.id }]); get().fetchData(); },
   updatePrinter: async (id, data) => { await supabase.from('printers').update(data).eq('id', id); get().fetchData(); },
   deletePrinter: async (id) => { await supabase.from('printers').delete().eq('id', id); get().fetchData(); },
   
   addProduct: async (data) => { const user = useAuthStore.getState().user; if (!user) return; await supabase.from('products').insert([{ ...data, user_id: user.id }]); get().fetchData(); },
   updateProduct: async (id, data) => { await supabase.from('products').update(data).eq('id', id); get().fetchData(); },
-  deleteProduct: async (id) => { await supabase.from('products').delete().eq('id', id); get().fetchData(); },
+  deleteProduct: async (id) => { 
+    const { error } = await supabase.from('products').delete().eq('id', id);
+    if (error) {
+      if (error.code === '23503') alert('Não é possível excluir: Produto usado em vendas ou produção.');
+      else console.error(error);
+    }
+    get().fetchData(); 
+  },
   
   addFilament: async (data) => { const user = useAuthStore.getState().user; if (!user) return; await supabase.from('filaments').insert([{ ...data, user_id: user.id }]); get().fetchData(); },
   updateFilament: async (id, data) => { await supabase.from('filaments').update(data).eq('id', id); get().fetchData(); },
@@ -116,16 +120,20 @@ export const useDataStore = create<DataState>((set, get) => ({
   updateExpense: async (id, data) => { await supabase.from('expenses').update(data).eq('id', id); get().fetchData(); },
   deleteExpense: async (id) => { await supabase.from('expenses').delete().eq('id', id); get().fetchData(); },
   
-  // --- CORREÇÃO AQUI (updateConfig) ---
+  // --- CORREÇÃO BLINDADA AQUI ---
   updateConfig: async (config) => { 
     const user = useAuthStore.getState().user; 
     if (!user) return; 
     
-    // 1. Atualiza no Banco
-    const { error } = await supabase.from('user_configs').update(config).eq('user_id', user.id); 
+    // Usamos UPSERT: Se existir atualiza, se não existir cria.
+    const { error } = await supabase.from('user_configs').upsert({ 
+      user_id: user.id,
+      ...config 
+    }); 
+    
     if (error) throw error;
 
-    // 2. Atualiza na Memória IMEDIATAMENTE (Sem esperar fetchProfile)
+    // Atualiza memória
     useAuthStore.setState((state) => ({
       config: { ...state.config, ...config }
     }));
@@ -235,7 +243,6 @@ export const useDataStore = create<DataState>((set, get) => ({
 
       const totalRevenue = order.total;
       const fee = (totalRevenue * (feePercent / 100)) + feeFixed;
-      
       let totalProdCost = 0;
       const orderItems = [];
 
@@ -256,7 +263,6 @@ export const useDataStore = create<DataState>((set, get) => ({
 
       if (orderItems.length > 0) {
         const profit = totalRevenue - fee - totalProdCost;
-
         const { data: orderRes, error } = await supabase.from('orders').insert([{
           user_id: user.id,
           customer_name: order.customer || 'Cliente Importado',
