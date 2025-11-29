@@ -15,6 +15,7 @@ interface DataState {
   
   fetchData: () => Promise<void>;
   
+  // Cadastros
   addPrinter: (data: Omit<Printer, 'id' | 'user_id' | 'total_hours_printed'>) => Promise<void>;
   updatePrinter: (id: string, data: Partial<Printer>) => Promise<void>;
   deletePrinter: (id: string) => Promise<void>;
@@ -38,6 +39,7 @@ interface DataState {
 
   updateConfig: (config: Partial<UserConfig>) => Promise<void>;
 
+  // Ações Complexas
   registerProduction: (printData: Omit<Print, 'id' | 'user_id' | 'created_at'>) => Promise<void>;
   deletePrint: (id: string) => Promise<void>;
   
@@ -67,22 +69,22 @@ export const useDataStore = create<DataState>((set, get) => ({
         supabase.from('printers').select('*').order('name'),
         supabase.from('products').select('*').order('name'),
         supabase.from('marketplaces').select('*').order('name'),
+        // O alias 'items:order_items' já traz a propriedade com o nome certo 'items'
         supabase.from('orders').select('*, items:order_items(*)').order('created_at', { ascending: false }),
         supabase.from('expenses').select('*').order('name'),
         supabase.from('prints').select('*').order('created_at', { ascending: false }),
       ]);
 
-      const formattedOrders = (ord.data || []).map((o: any) => ({
-        ...o,
-        items: o.order_items || [] 
-      }));
+      // CORREÇÃO: Removemos o map que estava quebrando os itens.
+      // Como usamos o alias no SQL acima, 'ord.data' já vem pronto.
+      const formattedOrders = ord.data || [];
 
       set({
         filaments: fil.data || [],
         printers: print.data || [],
         products: prod.data || [],
         marketplaces: mkt.data || [],
-        orders: formattedOrders,
+        orders: formattedOrders, 
         expenses: exp.data || [],
         prints: prt.data || [],
       });
@@ -91,7 +93,7 @@ export const useDataStore = create<DataState>((set, get) => ({
     }
   },
 
-  // ... CRUDs ...
+  // --- CRUD GERAL ---
   addPrinter: async (data) => { const user = useAuthStore.getState().user; if (!user) return; await supabase.from('printers').insert([{ ...data, user_id: user.id }]); get().fetchData(); },
   updatePrinter: async (id, data) => { await supabase.from('printers').update(data).eq('id', id); get().fetchData(); },
   deletePrinter: async (id) => { await supabase.from('printers').delete().eq('id', id); get().fetchData(); },
@@ -120,12 +122,11 @@ export const useDataStore = create<DataState>((set, get) => ({
   updateExpense: async (id, data) => { await supabase.from('expenses').update(data).eq('id', id); get().fetchData(); },
   deleteExpense: async (id) => { await supabase.from('expenses').delete().eq('id', id); get().fetchData(); },
   
-  // --- CORREÇÃO BLINDADA AQUI ---
+  // Correção do UpdateConfig para refletir na hora
   updateConfig: async (config) => { 
     const user = useAuthStore.getState().user; 
     if (!user) return; 
     
-    // Usamos UPSERT: Se existir atualiza, se não existir cria.
     const { error } = await supabase.from('user_configs').upsert({ 
       user_id: user.id,
       ...config 
@@ -133,7 +134,6 @@ export const useDataStore = create<DataState>((set, get) => ({
     
     if (error) throw error;
 
-    // Atualiza memória
     useAuthStore.setState((state) => ({
       config: { ...state.config, ...config }
     }));
@@ -238,15 +238,18 @@ export const useDataStore = create<DataState>((set, get) => ({
     const feeFixed = mkt ? mkt.fee_fixed : 0;
 
     for (const order of ordersData) {
+      // Usa maybeSingle para evitar erro 406
       const { data: existing } = await supabase.from('orders').select('id').eq('marketplace_order_id', order.externalId).maybeSingle();
       if (existing) continue;
 
       const totalRevenue = order.total;
       const fee = (totalRevenue * (feePercent / 100)) + feeFixed;
+      
       let totalProdCost = 0;
       const orderItems = [];
 
       for (const item of order.items) {
+        // Lógica de match de SKU
         const skuPlanilha = String(item.sku).trim().toUpperCase();
         const product = get().products.find(p => p.sku && String(p.sku).trim().toUpperCase() === skuPlanilha);
         
